@@ -3,7 +3,7 @@ import sys
 
 from conftest import HOOKS
 
-GUARDS = ["rm_guard.py", "secret_file_guard.py", "commit_guard.py"]
+GUARDS = ["rm_guard.py", "secret_file_guard.py", "commit_guard.py", "data_guard.py"]
 
 
 def test_malformed_input_blocks_instead_of_allowing():
