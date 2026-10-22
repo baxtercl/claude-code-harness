@@ -55,12 +55,13 @@ CONVENTIONAL = re.compile(
     r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
     r"(\([a-z0-9._/-]+\))?!?: \S"
 )
-# "claude" alone is not in the list, so messages mentioning CLAUDE.md stay valid.
-AI_TRAILERS = re.compile(
-    r"co-authored-by|generated[ -]with|generated-by|assisted-by|noreply@anthropic"
-    r"|claude code|claude\.ai|🤖",
-    re.IGNORECASE,
+# Only trailer and footer lines count: a message that says "update CLAUDE.md" or
+# "document Claude Code hooks" is not an attribution.
+AI_NAMES = r"(claude|anthropic|openai|chatgpt|gpt-?\d|codex|copilot|gemini|cursor|devin)"
+AI_TRAILER = re.compile(
+    rf"^(co-authored-by|generated-by|assisted-by|signed-off-by):.*\b{AI_NAMES}", re.IGNORECASE
 )
+AI_FOOTER = re.compile(rf"^(generated|created|written) (with|by) .*\b{AI_NAMES}|🤖", re.IGNORECASE)
 
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Prefixes that run the next word as a command, plus shell keywords that precede one.
@@ -187,6 +188,14 @@ def git(repo_dir: str, *args: str) -> str:
 
 def check_message(message: str) -> int:
     lines = [line.strip() for line in message.splitlines()]
+    if env_flag("HARNESS_BLOCK_AI_TRAILERS", False):
+        for line in lines:
+            if AI_TRAILER.match(line) or AI_FOOTER.search(line):
+                return block(
+                    GUARD,
+                    f"{line!r} is an AI attribution line, and this project requires "
+                    "human-only authorship lines. Rewrite the message without it.",
+                )
     subject = next((line for line in lines if line), "")
     if env_flag("HARNESS_CONVENTIONAL_COMMITS", True) and not CONVENTIONAL.match(subject):
         return block(
@@ -221,14 +230,7 @@ def check_branch(repo_dir: str) -> int:
 
 def check(event: dict[str, Any]) -> int:
     command = command_of(event)
-    commits = commits_in(command)
-    if commits and env_flag("HARNESS_BLOCK_AI_TRAILERS", False) and AI_TRAILERS.search(command):
-        return block(
-            GUARD,
-            "the commit carries an AI attribution trailer, and this project requires "
-            "human-only authorship lines. Rewrite the message without it.",
-        )
-    for commit in commits:
+    for commit in commits_in(command):
         message = commit_message(commit.args)
         if message is not None:
             code = check_message(message)
