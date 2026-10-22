@@ -1,6 +1,6 @@
 [project]
 name = "claude-code-harness"
-version = "0.1.0"
+version = "0.2.0"
 description = "A tested, defense-in-depth harness for Claude Code: permission tiers, guard hooks, agents, commands and skills."
 requires-python = ">=3.10"
 license = { text = "MIT" }
