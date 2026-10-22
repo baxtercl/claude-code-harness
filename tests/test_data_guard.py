@@ -123,10 +123,10 @@ def test_absolute_path_inside_the_project_is_blocked(project):
     assert bash(f"rm {project}/data/app.db", project).returncode == 2
 
 
-def test_paths_match_by_suffix_so_a_lookalike_elsewhere_is_blocked_too(project, tmp_path_factory):
+def test_an_absolute_path_outside_the_project_is_not_protected(project, tmp_path_factory):
     elsewhere = tmp_path_factory.mktemp("elsewhere")
-    assert bash(f"rm {elsewhere}/data/uploads", project).returncode == 2
-    assert bash(f"rm {elsewhere}/data/other", project).returncode == 0
+    assert bash(f"rm {elsewhere}/data/uploads", project).returncode == 0
+    assert bash(f"rm {project}/data/uploads", project).returncode == 2
 
 
 def test_migration_script_asks(project):

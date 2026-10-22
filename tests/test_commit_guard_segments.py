@@ -7,7 +7,7 @@ import pytest
 from conftest import HOOKS
 
 sys.path.insert(0, str(HOOKS))
-from _common import split_segments  # noqa: E402
+from _shell import split_segments  # noqa: E402
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def run(hook, repo, command, env=None):
         ("cat <<-'EOF'\n\tbody\n\tEOF\nnext", ["cat <<-'EOF'", "next"]),
         # An unterminated heredoc is not dropped: its lines are inspected as commands.
         ("cat <<EOF\none\ntwo", ["cat <<EOF", "one", "two"]),
-        ("echo $((1<<2)); next", ["echo $", "1<<2", "next"]),
+        ("echo $((1<<2)); next", ["echo $((1<<2))", "next"]),
         ("echo a\\;b", ["echo a\\;b"]),
     ],
 )

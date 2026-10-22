@@ -7,6 +7,10 @@ throwaway copies from mutation tests) and not a single dangerous one. This
 guard allows `rm` on disposable paths and blocks only catastrophic or
 unrecoverable targets.
 
+It looks at every command on the line, including those inside `bash -c`, behind
+`sudo`/`env`/`xargs` and in subshells (see _shell.py), and understands Windows
+paths (`C:\\Users\\name\\project`).
+
 Known limitation: it reads the literal command text. `rm -rf $X`, where $X
 expands to a protected path, is not detected. Version control is the safety
 net there, not this hook.
@@ -23,7 +27,8 @@ import posixpath
 import re
 from typing import Any
 
-from _common import ALLOW, block, command_of, env_list, run_guard, tokenize
+from _common import ALLOW, block, command_of, env_list, run_guard
+from _shell import iter_commands, program_name
 
 GUARD = "rm-guard"
 
@@ -58,47 +63,52 @@ SYSTEM_TARGETS = {
 WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 WINDOWS_ROOT = re.compile(r"^[A-Za-z]:/?$")
 WINDOWS_HOME = re.compile(r"^[A-Za-z]:/Users/[^/]+$", re.IGNORECASE)
-ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-WRAPPERS = {"sudo", "time", "nohup", "command", "xargs", "exec", "env"}
-SEGMENT_SPLIT = re.compile(r"&&|\|\||[;\n|]")
+WINDOWS_SYSTEM = re.compile(
+    r"^[A-Za-z]:/(windows|users|programdata|program files( \(x86\))?)$", re.IGNORECASE
+)
 
 
 def normalize(path: str) -> str:
-    """Forward slashes, no trailing slash, and lower case for Windows drive paths."""
-    clean = path.strip().strip("'\"").replace("\\", "/")
+    """Forward slashes, no quotes or repeated slashes, and lower case for Windows drive paths."""
+    clean = re.sub(r"['\"]", "", path.strip()).replace("\\", "/")
+    clean = re.sub(r"/{2,}", "/", clean)
     if WINDOWS_DRIVE.match(clean):
         clean = clean.lower()
     return posixpath.normpath(clean) if clean else ""
+
+
+def is_system_path(clean: str) -> bool:
+    return clean in SYSTEM_TARGETS or bool(WINDOWS_ROOT.match(clean) or WINDOWS_SYSTEM.match(clean))
 
 
 def danger_reason(target: str, protected: set[str], project_dir: str) -> str | None:
     clean = normalize(target)
     if not clean:
         return None
-    if clean in SYSTEM_TARGETS or WINDOWS_ROOT.match(clean):
+    if is_system_path(clean):
         return "is a root, system or wildcard path"
+    if clean.endswith("/*") and is_system_path(clean[:-2] or "/"):
+        return "is the whole content of a root or system path"
     if clean.startswith("~") or re.match(r"^\$\{?HOME\}?", clean):
         return "is inside the user's home directory"
     if re.match(r"^/(Users|home)/[^/]+$", clean) or WINDOWS_HOME.match(clean):
         return "is a user's home directory"
     if project_dir and clean == normalize(project_dir):
         return "is the project root"
-    if posixpath.basename(clean) in protected:
-        return f"is source code or repository metadata ({posixpath.basename(clean)})"
+    name = posixpath.basename(clean)
+    if WINDOWS_DRIVE.match(clean):
+        protected = {item.lower() for item in protected}
+    if name in protected:
+        return f"is source code or repository metadata ({name})"
     return None
 
 
-def rm_targets(segment: str) -> list[str]:
-    # Non-POSIX splitting keeps the backslashes of Windows paths.
-    tokens = tokenize(segment, posix=False)
-    i = 0
-    while i < len(tokens) and (ENV_ASSIGNMENT.match(tokens[i]) or tokens[i] in WRAPPERS):
-        i += 1
-    if i >= len(tokens) or posixpath.basename(normalize(tokens[i])) != "rm":
+def rm_targets(tokens: list[str]) -> list[str]:
+    if not tokens or program_name(normalize(tokens[0])) != "rm":
         return []
     targets: list[str] = []
     end_of_flags = False
-    for arg in tokens[i + 1 :]:
+    for arg in tokens[1:]:
         if arg == "--":
             end_of_flags = True
             continue
@@ -110,12 +120,10 @@ def rm_targets(segment: str) -> list[str]:
 
 def check(event: dict[str, Any]) -> int:
     command = command_of(event)
-    if not re.search(r"\brm\b", command):
-        return ALLOW
     protected = set(env_list("HARNESS_RM_PROTECTED", "src,.git,.claude,docs,migrations"))
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
-    for segment in SEGMENT_SPLIT.split(command):
-        for target in rm_targets(segment):
+    for found in iter_commands(command, windows=True):
+        for target in rm_targets(found.tokens):
             reason = danger_reason(target, protected, project_dir)
             if reason:
                 return block(

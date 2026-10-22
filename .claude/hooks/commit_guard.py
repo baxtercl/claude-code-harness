@@ -6,21 +6,22 @@ Blocks a `git commit` when:
      feature/* or bugfix/* branches.
   2. The current branch only accepts merges (default: develop) and no merge
      is in progress. The commit that concludes a conflicted merge is allowed.
-  3. The `-m` message is not a Conventional Commit (can be turned off).
+  3. The message is not a Conventional Commit (can be turned off).
   4. Optionally, the message carries an AI attribution trailer or footer line
-     (`Co-Authored-By: Claude ...`, `Generated with ...`). Some teams require
-     human-only authorship lines; this is off by default because the
-     harness-level `attribution` setting is the cleaner control. Human
-     co-authors and messages that merely mention an assistant are allowed.
+     (a `Co-Authored-By` naming an assistant, a `Generated with ...` footer).
+     Some teams require human-only authorship lines; this is off by default
+     because the harness-level `attribution` setting is the cleaner control.
+     Human co-authors and messages that merely mention an assistant are allowed.
 
-A command is a commit only when `git commit` is the program of one of its
-segments (split on `;`, `&&`, `||`, `|`, newlines and subshells, outside quotes).
-The message comes from that segment alone, so text that mentions a commit, or
-the `-m` of another program chained before it, is never mistaken for one.
-`bash -c '...'`, `sh -c` and `eval` are looked into as well.
+A command is a commit only when `git commit` is the program of one of the commands
+on the line (see _shell.py: separators, nested shells, wrappers such as `sudo` or
+`env`, `find -exec`). The message comes from that command alone, so text that
+mentions a commit, or the `-m` of another program chained before it, is never
+mistaken for one. The message may be given with -m, with `-F -` (a heredoc), with
+`-F <file>` (read when the file exists) and with --trailer.
 
-Known limitations: heredoc bodies are skipped, `$(...)` inside double quotes is
-not expanded, and git aliases (`git ci`) are not recognised.
+Known limitations: git aliases (`git ci`) are not recognised, and neither are
+commits run on another machine (`ssh host 'git commit'`).
 
 Configuration (environment):
   HARNESS_PROTECTED_BRANCHES   default "main"
@@ -35,21 +36,14 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from _common import (
-    ALLOW,
-    block,
-    command_of,
-    env_flag,
-    env_list,
-    run_guard,
-    split_segments,
-    tokenize,
-)
+from _common import ALLOW, block, command_of, env_flag, env_list, run_guard
+from _shell import iter_commands, program_name
 
 GUARD = "commit-guard"
-MAX_NESTING = 3
+MAX_MESSAGE_FILE = 100_000
 
 CONVENTIONAL = re.compile(
     r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
@@ -61,13 +55,10 @@ AI_NAMES = r"(claude|anthropic|openai|chatgpt|gpt-?\d|codex|copilot|gemini|curso
 AI_TRAILER = re.compile(
     rf"^(co-authored-by|generated-by|assisted-by|signed-off-by):.*\b{AI_NAMES}", re.IGNORECASE
 )
-AI_FOOTER = re.compile(rf"^(generated|created|written) (with|by) .*\b{AI_NAMES}|🤖", re.IGNORECASE)
+AI_FOOTER = re.compile(
+    rf"^(generated|created|written|made|co-created) (with|by) .*\b{AI_NAMES}|🤖", re.IGNORECASE
+)
 
-ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-# Prefixes that run the next word as a command, plus shell keywords that precede one.
-PREFIXES = {"sudo", "time", "nohup", "command", "xargs", "exec", "env"}
-PREFIXES |= {"if", "then", "else", "elif", "do", "while", "until", "!"}
-SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 GIT_OPTIONS_WITH_VALUE = {
     "-C",
     "-c",
@@ -77,8 +68,8 @@ GIT_OPTIONS_WITH_VALUE = {
     "--super-prefix",
     "--config-env",
 }
-# `-m`, optionally clustered with value-less flags (`-am`, `-nm`) or glued to its value (`-mfix`).
-SHORT_MESSAGE = re.compile(r"^-[aenpsvqzio]*m(.*)$")
+# `-m` or `-F`, optionally clustered with value-less flags (`-am`) or glued to the value.
+SHORT_VALUE = re.compile(r"^-[aenpsvqzio]*([mF])(.*)$")
 # What `-m "$(cat <<'EOF' ... EOF)"` leaves in the argument.
 SUBSTITUTED_HEREDOC = re.compile(
     r"^\$\(\s*cat\s+<<-?\s*(['\"]?)(\w+)\1\n(.*)\n\s*\2\s*\)$", re.DOTALL
@@ -89,9 +80,10 @@ SUBSTITUTED_HEREDOC = re.compile(
 class Commit:
     args: list[str]
     git_dirs: list[str]
+    stdin: str
 
 
-def git_commit(args: list[str]) -> Commit | None:
+def git_commit(args: list[str], stdin: str) -> Commit | None:
     """The commit invocation behind `git <global options> commit <args>`, if it is one."""
     git_dirs: list[str] = []
     index = 0
@@ -103,70 +95,69 @@ def git_commit(args: list[str]) -> Commit | None:
             index += 1
         index += 1
     if index < len(args) and args[index] == "commit":
-        return Commit(args[index + 1 :], git_dirs)
+        return Commit(args[index + 1 :], git_dirs, stdin)
     return None
 
 
-def commits_in(command: str, depth: int = 0) -> list[Commit]:
-    commits: list[Commit] = []
-    for segment in split_segments(command):
-        tokens = tokenize(segment)
-        start = 0
-        while start < len(tokens) and (
-            ENV_ASSIGNMENT.match(tokens[start]) or tokens[start] in PREFIXES
-        ):
-            start += 1
-        if start >= len(tokens):
-            continue
-        program = os.path.basename(tokens[start]).lower().removesuffix(".exe")
-        args = tokens[start + 1 :]
-        if program == "git":
-            commit = git_commit(args)
+def commits_in(command: str) -> list[Commit]:
+    commits = []
+    for found in iter_commands(command):
+        if program_name(found.tokens[0]) == "git":
+            commit = git_commit(found.tokens[1:], found.stdin)
             if commit:
                 commits.append(commit)
-        elif program in SHELLS or program == "eval":
-            if depth >= MAX_NESTING:
-                raise ValueError("shell commands nested too deeply to inspect")
-            commits += nested_commits(program, args, depth + 1)
     return commits
 
 
-def nested_commits(program: str, args: list[str], depth: int) -> list[Commit]:
-    if program == "eval":
-        return commits_in(" ".join(args), depth)
-    for index, arg in enumerate(args[:-1]):
-        if re.fullmatch(r"-[a-zA-Z]*c", arg):
-            return commits_in(args[index + 1], depth)
-    return []
+def read_message_file(path: str, repo_dir: str) -> str:
+    candidate = Path(repo_dir) / os.path.expanduser(path)
+    try:
+        if candidate.is_file() and candidate.stat().st_size <= MAX_MESSAGE_FILE:
+            return candidate.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    return ""
 
 
-def commit_message(args: list[str]) -> str | None:
-    """The message given with -m/--message (paragraphs joined by a blank line), if any."""
+def commit_message(commit: Commit, repo_dir: str) -> str | None:
+    """The message from -m, -F and --trailer (paragraphs joined by a blank line), if given."""
     messages: list[str] = []
+    trailers: list[str] = []
+    args = commit.args
     index = 0
     while index < len(args):
         arg = args[index]
         if arg == "--":
             break
-        if arg == "--message" and index + 1 < len(args):
-            messages.append(args[index + 1])
+        flag, value = "", ""
+        if arg in {"--message", "--file", "--trailer"} and index + 1 < len(args):
+            flag, value = arg, args[index + 1]
             index += 1
-        elif arg.startswith("--message="):
-            messages.append(arg.split("=", 1)[1])
-        elif not arg.startswith("--"):
-            match = SHORT_MESSAGE.match(arg)
-            if match and match.group(1):
-                messages.append(match.group(1))
-            elif match and index + 1 < len(args):
-                messages.append(args[index + 1])
+        elif arg.startswith(("--message=", "--file=", "--trailer=")):
+            flag, value = arg.split("=", 1)
+        elif not arg.startswith("--") and (short := SHORT_VALUE.match(arg)):
+            letter, glued = short.groups()
+            flag = "--message" if letter == "m" else "--file"
+            value = glued
+            if not glued and index + 1 < len(args):
+                value = args[index + 1]
                 index += 1
+        if flag == "--message":
+            messages.append(value)
+        elif flag == "--trailer":
+            trailers.append(value)
+        elif flag == "--file":
+            text = commit.stdin if value == "-" else read_message_file(value, repo_dir)
+            if text:
+                messages.append(text)
         index += 1
-    if not messages:
+    if not messages and not trailers:
         return None
-    heredoc = SUBSTITUTED_HEREDOC.match(messages[0])
-    if heredoc:
-        messages[0] = heredoc.group(3)
-    return "\n\n".join(messages)
+    if messages:
+        heredoc = SUBSTITUTED_HEREDOC.match(messages[0])
+        if heredoc:
+            messages[0] = heredoc.group(3)
+    return "\n\n".join([*messages, *trailers])
 
 
 def repo_dir_for(command: str, cwd: str, git_dirs: list[str]) -> str:
@@ -231,12 +222,12 @@ def check_branch(repo_dir: str) -> int:
 def check(event: dict[str, Any]) -> int:
     command = command_of(event)
     for commit in commits_in(command):
-        message = commit_message(commit.args)
+        repo_dir = repo_dir_for(command, str(event.get("cwd") or ""), commit.git_dirs)
+        message = commit_message(commit, repo_dir)
         if message is not None:
             code = check_message(message)
             if code != ALLOW:
                 return code
-        repo_dir = repo_dir_for(command, str(event.get("cwd") or ""), commit.git_dirs)
         code = check_branch(repo_dir)
         if code != ALLOW:
             return code

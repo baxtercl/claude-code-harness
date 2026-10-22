@@ -20,14 +20,20 @@ All notable changes to this project are documented here. The format follows
   backslashes, so `rm -rf C:\Users\name\project` was allowed. Paths are now normalised, drive
   roots and `C:\Users\name` are protected, and `..` segments are resolved.
 - `commit_guard.py` treated any command whose text contained `git commit` as a commit and took
-  the first `-m` of the whole command as its message. It now splits the command into segments
-  outside quotes and heredocs, treats a segment as a commit only when `git commit` is its
-  program, and reads the message from that segment. It also follows `bash -c`, `sh -c` and
-  `eval`, accepts `-am`, `-mMESSAGE` and `--message=`, and unwraps a message given as a heredoc
-  through command substitution.
+  the first `-m` of the whole command as its message. A new shared analyser (`_shell.py`) now
+  splits the line into commands outside quotes, skips comments and heredoc bodies, and looks
+  inside `bash -c`, `eval`, shells fed by a heredoc or a pipe, `$(...)` in double quotes and
+  wrappers such as `sudo -u x`, `env -i`, `nice`, `timeout`, `xargs` and `find -exec`. A command
+  is a commit only when `git commit` is its program, and the message is read from that command
+  (`-m`, `-am`, `-mMESSAGE`, `--message=`, `-F -`, `-F <file>`, `--trailer`, or a heredoc through
+  command substitution). A command it cannot read is blocked.
 - With `HARNESS_BLOCK_AI_TRAILERS=1`, `commit_guard.py` blocked any mention of an assistant's
   product name in the command. It now checks only trailer and footer lines of the message, so
   human co-authors and messages that merely mention an assistant are allowed.
+- `rm_guard.py` now uses the same analyser, so `rm` is found inside `bash -c`, subshells,
+  backticks, `sudo`/`env`/`xargs` and behind `&`; it also blocks `rm -rf //`, `/*`, quote
+  concatenation such as `s"r"c`, `C:\Windows` and `C:\Program Files`, and compares protected
+  names on Windows paths case-insensitively.
 
 ## [0.1.0] - 2026-10-10
 

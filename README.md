@@ -54,9 +54,11 @@ tests/                       pytest suite for every guard
 | `rm_guard.py` | `rm` on `/`, `~`, home directories, the project root, `src`, `.git`, `.claude`, `docs`, `migrations` | `rm -rf dist`, `node_modules`, caches, temp copies, single files |
 | `secret_file_guard.py` | `cat .env`, `.env.local`, `.env.production`, `*.pem`, `*.key`, service-account and credential JSON, SSH keys | `.env.example`/`.sample`/`.template`, prose that mentions `.env`, the redacting inspector |
 
-`commit_guard.py` looks at one command segment at a time (split on `;`, `&&`, `||`, `|`, newlines and subshells, outside quotes). A commit is a segment whose program is `git commit`, and its message is read from that segment alone, so `pytest -m slow && git commit -m "fix: x"`, `echo "git commit"` and a heredoc that mentions a commit are judged correctly. It also looks inside `bash -c`, `sh -c` and `eval`. With `HARNESS_BLOCK_AI_TRAILERS=1` it rejects only attribution lines (a `Co-Authored-By` naming an assistant, a `Generated with` footer), not every mention of an assistant.
+`rm_guard.py`, `commit_guard.py` and `data_guard.py` share one command analyser (`_shell.py`) and judge each command on the line, not the text of the line. It splits on `;`, `&`, `|`, newlines, subshells and backticks outside quotes, skips comments, heredoc bodies and `$((...))`, and looks inside `$(...)` in double quotes, `bash -c`, `sh -c`, `eval`, shells fed by a heredoc, a here-string or a pipe, wrappers (`sudo -u x`, `env -i`, `time`, `nice`, `timeout`, `xargs`, `find -exec`) and leading assignments and redirections. So `pytest -m slow && git commit -m "fix: x"`, `echo "git commit"` and a heredoc that mentions a commit are judged correctly, and `sudo -u root git commit`, `echo '...' | sh` or a commit hidden behind a comment are still found. A command it cannot read (an unterminated quote) is blocked.
 
-Known limitations, stated on purpose: guards read the literal command. `rm -rf $DIR`, where `$DIR` expands to a protected path, is not caught, and neither is `$(...)` inside double quotes or a git alias such as `git ci`. Version control is the safety net there.
+With `HARNESS_BLOCK_AI_TRAILERS=1`, `commit_guard.py` rejects only attribution lines in the message (a `Co-Authored-By` naming an assistant, a `Generated with` footer), whether the message comes from `-m`, `-F -`, `-F <file>` or `--trailer`, and not every mention of an assistant.
+
+Known limitations, stated on purpose: guards read the literal command. `rm -rf $DIR`, where `$DIR` expands to a protected path, is not caught, and neither is a git alias such as `git ci` or a commit run on another machine (`ssh host 'git commit'`). Version control is the safety net there.
 
 ### Optional: `data_guard.py`
 
@@ -90,7 +92,7 @@ Version control does not hold a SQLite file or uploaded documents, so an agent t
 |---|---|---|---|
 | `data_guard.py` | `rm`, `mv`, `truncate`, `dd`, redirections and file-tool edits on a protected path; `sqlite3` writes; commands matching `HARNESS_DATA_BLOCK_PATTERNS`; the apply flag without a recent backup | The apply flag once a backup exists; commands matching `HARNESS_DATA_ASK_PATTERNS` | Reads, `cp` out of the data, `sqlite3 -readonly`, commands that point `DATABASE_URL`, `--database` or `--db` elsewhere, prose that only mentions a path |
 
-Paths match by suffix, so a lookalike such as `/elsewhere/data/uploads` is blocked too: the guard errs on the side of blocking.
+Relative paths match by suffix; an absolute path counts only when it is inside the project.
 
 ### The PRD Phase 0
 
