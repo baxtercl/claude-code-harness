@@ -19,6 +19,7 @@ Configuration (environment):
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 from typing import Any
 
@@ -54,35 +55,46 @@ SYSTEM_TARGETS = {
     "/private/tmp",
     "/tmp",
 }
+WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
+WINDOWS_ROOT = re.compile(r"^[A-Za-z]:/?$")
+WINDOWS_HOME = re.compile(r"^[A-Za-z]:/Users/[^/]+$", re.IGNORECASE)
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 WRAPPERS = {"sudo", "time", "nohup", "command", "xargs", "exec", "env"}
 SEGMENT_SPLIT = re.compile(r"&&|\|\||[;\n|]")
 
 
+def normalize(path: str) -> str:
+    """Forward slashes, no trailing slash, and lower case for Windows drive paths."""
+    clean = path.strip().strip("'\"").replace("\\", "/")
+    if WINDOWS_DRIVE.match(clean):
+        clean = clean.lower()
+    return posixpath.normpath(clean) if clean else ""
+
+
 def danger_reason(target: str, protected: set[str], project_dir: str) -> str | None:
-    target = target.strip()
-    if not target:
+    clean = normalize(target)
+    if not clean:
         return None
-    clean = target.rstrip("/") or "/"
-    if clean in SYSTEM_TARGETS or target in SYSTEM_TARGETS:
+    if clean in SYSTEM_TARGETS or WINDOWS_ROOT.match(clean):
         return "is a root, system or wildcard path"
     if clean.startswith("~") or re.match(r"^\$\{?HOME\}?", clean):
         return "is inside the user's home directory"
-    if re.match(r"^/(Users|home)/[^/]+$", clean):
+    if re.match(r"^/(Users|home)/[^/]+$", clean) or WINDOWS_HOME.match(clean):
         return "is a user's home directory"
-    if project_dir and os.path.normpath(clean) == os.path.normpath(project_dir):
+    if project_dir and clean == normalize(project_dir):
         return "is the project root"
-    if os.path.basename(clean) in protected:
-        return f"is source code or repository metadata ({os.path.basename(clean)})"
+    if posixpath.basename(clean) in protected:
+        return f"is source code or repository metadata ({posixpath.basename(clean)})"
     return None
 
 
 def rm_targets(segment: str) -> list[str]:
-    tokens = tokenize(segment)
+    # Non-POSIX splitting keeps the backslashes of Windows paths.
+    tokens = tokenize(segment, posix=False)
     i = 0
     while i < len(tokens) and (ENV_ASSIGNMENT.match(tokens[i]) or tokens[i] in WRAPPERS):
         i += 1
-    if i >= len(tokens) or os.path.basename(tokens[i]) != "rm":
+    if i >= len(tokens) or posixpath.basename(normalize(tokens[i])) != "rm":
         return []
     targets: list[str] = []
     end_of_flags = False

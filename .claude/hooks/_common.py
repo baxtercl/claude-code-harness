@@ -44,10 +44,13 @@ def env_flag(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def tokenize(segment: str) -> list[str]:
-    """Split a shell segment into tokens; fall back to whitespace on bad quoting."""
+def tokenize(segment: str, posix: bool = True) -> list[str]:
+    """Split a shell segment into tokens; fall back to whitespace on bad quoting.
+
+    posix=False keeps backslashes (Windows paths) and leaves the quotes on the tokens.
+    """
     try:
-        return shlex.split(segment, posix=True)
+        return shlex.split(segment, posix=posix)
     except ValueError:
         return segment.split()
 
