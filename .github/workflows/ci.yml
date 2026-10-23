@@ -10,10 +10,19 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.13"]
+        include:
+          # The guards also run on Windows (Git Bash); Windows paths are tested there.
+          - os: windows-latest
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,6 +33,7 @@ jobs:
       - name: Lint
         run: ruff check . && ruff format --check .
       - name: Shellcheck
+        if: runner.os == 'Linux'
         run: shellcheck install.sh
       - name: Validate settings.json
         run: python -m json.tool .claude/settings.json > /dev/null

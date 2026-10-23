@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-10-23
+
+### Fixed
+
+- `commit_guard.py` lost the backslashes of unquoted Windows paths (`git -C C:\repo commit`,
+  `cd C:\repo && git commit`), so on Windows it inspected a non-existent directory. On Windows it
+  now tokenizes without POSIX escapes. The CI also runs the suite on Windows.
+
 ## [0.2.0] - 2026-10-22
 
 ### Added

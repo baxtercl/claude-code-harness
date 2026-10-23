@@ -23,8 +23,8 @@ one the command works in: the event's directory, moved by any `cd`/`pushd` befor
 by `-C`, and by `GIT_DIR`/`--git-dir`.
 
 Known limitations: git aliases (`git ci`) are not recognised, nor are commits run on
-another machine (`ssh host 'git commit'`), a message held in a variable (`-m "$MSG"`)
-is not checked, and Windows backslash paths after `-C` are not understood.
+another machine (`ssh host 'git commit'`), and a message held in a variable (`-m "$MSG"`)
+is not checked.
 
 Configuration (environment):
   HARNESS_PROTECTED_BRANCHES   default "main"
@@ -122,10 +122,11 @@ def git_commit(args: list[str], stdin: str, raw: list[str], dirs: list[str]) -> 
     return None
 
 
-def commits_in(command: str) -> list[Commit]:
+def commits_in(command: str, windows: bool = os.name == "nt") -> list[Commit]:
     commits = []
     dirs: list[str] = []
-    for found in iter_commands(command):
+    # On Windows (Git Bash) an unquoted `C:\path` keeps its backslashes.
+    for found in iter_commands(command, windows=windows):
         if not found.tokens:
             continue
         program = program_name(found.tokens[0])
