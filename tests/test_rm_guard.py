@@ -54,3 +54,42 @@ def test_protected_names_are_configurable(hook):
     env = {"HARNESS_RM_PROTECTED": "vendor"}
     assert hook("rm_guard.py", "rm -rf vendor", env=env).returncode == 2
     assert hook("rm_guard.py", "rm -rf src", env=env).returncode == 0
+
+
+WINDOWS_PROJECT = r"C:\Users\alice\proj"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        rf"rm -rf {WINDOWS_PROJECT}",
+        rf'rm -rf "{WINDOWS_PROJECT}"',
+        rf"rm -rf {WINDOWS_PROJECT}\\",
+        r"rm -rf c:/users/alice/proj",
+        rf"rm -rf {WINDOWS_PROJECT}\src",
+        r"rm -rf C:\Users\alice",
+        r"rm -rf C:\\",
+        r"rm -rf C:/",
+    ],
+)
+def test_blocks_windows_paths(hook, command):
+    result = hook("rm_guard.py", command, env={"CLAUDE_PROJECT_DIR": WINDOWS_PROJECT})
+    assert result.returncode == 2, result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        rf"rm -rf {WINDOWS_PROJECT}\dist",
+        rf'rm -rf "{WINDOWS_PROJECT}\build output"',
+        r"rm -rf C:\Users\alice\other\cache",
+    ],
+)
+def test_allows_disposable_windows_paths(hook, command):
+    result = hook("rm_guard.py", command, env={"CLAUDE_PROJECT_DIR": WINDOWS_PROJECT})
+    assert result.returncode == 0, result.stderr
+
+
+def test_normalises_parent_references(hook):
+    assert hook("rm_guard.py", "rm -rf foo/..").returncode == 2
+    assert hook("rm_guard.py", "rm -rf src/../dist").returncode == 0

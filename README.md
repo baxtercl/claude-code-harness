@@ -22,7 +22,8 @@ Three ideas shape this harness:
 ├── hooks/
 │   ├── commit_guard.py      protected branches, merge-only branches, Conventional Commits
 │   ├── rm_guard.py          blocks rm on root, home, project root and source folders
-│   └── secret_file_guard.py blocks shell access to .env, keys and credential files
+│   ├── secret_file_guard.py blocks shell access to .env, keys and credential files
+│   └── data_guard.py        optional: protects live data files and folders (opt-in)
 ├── agents/
 │   ├── code-reviewer.md     severity-ranked review that must quote every finding
 │   └── security-auditor.md  OWASP-oriented audit with a PASS/FAIL verdict
@@ -53,7 +54,47 @@ tests/                       pytest suite for every guard
 | `rm_guard.py` | `rm` on `/`, `~`, home directories, the project root, `src`, `.git`, `.claude`, `docs`, `migrations` | `rm -rf dist`, `node_modules`, caches, temp copies, single files |
 | `secret_file_guard.py` | `cat .env`, `.env.local`, `.env.production`, `*.pem`, `*.key`, service-account and credential JSON, SSH keys | `.env.example`/`.sample`/`.template`, prose that mentions `.env`, the redacting inspector |
 
-Known limitation, stated on purpose: guards read the literal command. `rm -rf $DIR`, where `$DIR` expands to a protected path, is not caught. Version control is the safety net there.
+`rm_guard.py`, `commit_guard.py` and `data_guard.py` share one command analyser (`_shell.py`) and judge each command on the line, not the text of the line. It splits on `;`, `&`, `|`, newlines, subshells and backticks outside quotes, skips comments, heredoc bodies and `$((...))`, and looks inside `$(...)` in double quotes, `bash -c`, `sh -c`, `eval`, shells fed by a heredoc, a here-string or a pipe, wrappers (`sudo -u x`, `env -i`, `time`, `nice`, `timeout`, `xargs`, `find -exec`) and leading assignments and redirections. So `pytest -m slow && git commit -m "fix: x"`, `echo "git commit"` and a heredoc that mentions a commit are judged correctly, and `sudo -u root git commit`, `echo '...' | sh` or a commit hidden behind a comment are still found. A command it cannot read (an unterminated quote) is blocked.
+
+With `HARNESS_BLOCK_AI_TRAILERS=1`, `commit_guard.py` rejects only attribution lines in the message (a `Co-Authored-By` naming an assistant, a `Generated with` footer), whether the message comes from `-m`, `-F -`, `-F <file>` or `--trailer`, and not every mention of an assistant.
+
+The repository a commit goes to is the one the command works in: the event's directory moved by `cd`/`pushd`, `-C`, `GIT_DIR` and `--git-dir`. Line continuations, `$'...'` strings and brace expansion (`rm {a,b}`) are resolved before the check.
+
+Known limitations, stated on purpose. The guards stop accidents by an agent that is not trying to evade them; they are not a sandbox. They read the literal command, so `rm -rf $DIR`, where `$DIR` expands to a protected path, is not caught, and neither is a git alias such as `git ci`, a commit run on another machine (`ssh host 'git commit'`), a message held in a variable, or a script that builds its command from pieces. `data_guard.py` knows the common destructive tools (`rm`, `mv`, `cp`, `rsync`, `ln`, `tee`, `sed -i`, `find -delete`, `sqlite3`, redirections) and not every writer (`tar -x`, `unzip`, `curl -o`, `perl -pi`). Version control and backups are the safety net there.
+
+### Optional: `data_guard.py`
+
+Version control does not hold a SQLite file or uploaded documents, so an agent that runs a migration or a data script can destroy them for good. `data_guard.py` makes "back up before you mutate" a rule. It is off until `HARNESS_DATA_PATHS` lists what to protect, and it is not wired by default. To use it, set the variables and add the hook to `.claude/settings.json`, once under the `Bash` matcher and once for the file tools:
+
+```json
+{
+  "env": {
+    "HARNESS_DATA_PATHS": "data/app.db,data/uploads,data/backups",
+    "HARNESS_DATA_BACKUP_DIR": "data/backups",
+    "HARNESS_DATA_BACKUP_CMD": "python scripts/backup.py",
+    "HARNESS_DATA_BLOCK_PATTERNS": "\\balembic\\b.*\\b(upgrade|downgrade|stamp)\\b",
+    "HARNESS_DATA_ASK_PATTERNS": "scripts/migrate\\.py"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/data_guard.py" }]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [{ "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/data_guard.py" }]
+      }
+    ]
+  }
+}
+```
+
+| Hook | Blocks | Asks | Allows (tested) |
+|---|---|---|---|
+| `data_guard.py` | `rm`, `mv`, `truncate`, `dd`, redirections and file-tool edits on a protected path; `sqlite3` writes; commands matching `HARNESS_DATA_BLOCK_PATTERNS`; the apply flag without a recent backup | The apply flag once a backup exists; commands matching `HARNESS_DATA_ASK_PATTERNS` | Reads, `cp` out of the data, `sqlite3 -readonly`, commands that point `DATABASE_URL`, `--database` or `--db` elsewhere, prose that only mentions a path |
+
+Relative paths match by suffix; an absolute path counts only when it is inside the project.
 
 ### The PRD Phase 0
 
@@ -86,6 +127,13 @@ All guard behavior is set through the `env` block in `.claude/settings.json`:
 | `HARNESS_CONVENTIONAL_COMMITS` | `1` | Enforce `type(scope): description` |
 | `HARNESS_BLOCK_AI_TRAILERS` | `0` | For teams that require human-only authorship lines |
 | `HARNESS_RM_PROTECTED` | `src,.git,.claude,docs,migrations` | Folder names `rm` may not remove whole |
+| `HARNESS_DATA_PATHS` | empty (guard off) | Files and folders `data_guard.py` protects, relative to the project |
+| `HARNESS_DATA_BACKUP_DIR` | empty | Folder where backups land; an entry newer than the age limit unlocks the apply flag |
+| `HARNESS_DATA_BACKUP_CMD` | empty | Backup command quoted in the guard's messages |
+| `HARNESS_BACKUP_MAX_AGE_MINUTES` | `60` | How recent a backup must be |
+| `HARNESS_DATA_APPLY_FLAG` | `--apply` | Flag that needs a recent backup, then a confirmation |
+| `HARNESS_DATA_BLOCK_PATTERNS` | empty | Comma-separated regular expressions of commands that are always blocked |
+| `HARNESS_DATA_ASK_PATTERNS` | empty | Comma-separated regular expressions of commands that need a confirmation |
 
 Whether commits mention AI assistance is a team choice. The cleanest control is Claude Code's `attribution` setting; the hook option exists for teams that want it enforced.
 
