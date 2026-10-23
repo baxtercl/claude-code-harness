@@ -237,9 +237,10 @@ def edited_paths(tool_input: dict[str, Any]) -> list[str]:
     return paths
 
 
-def check_file_tool(event: dict[str, Any], root: str, protected: list[str]) -> int:
+def check_file_tool(event: dict[str, Any], scope: Scope) -> int:
+    # Patch paths are relative to the session's directory, not to the project root.
     for path in edited_paths(event.get("tool_input") or {}):
-        if is_protected(path, root, protected):
+        if scope.protects(path):
             return block(
                 GUARD,
                 f"{path!r} is live application data. Change it through the application, "
@@ -416,12 +417,20 @@ def check(event: dict[str, Any]) -> int:
     if not protected:
         return ALLOW
     project_dir = find_project_dir(event)
+    scope = Scope(project_dir, protected, str(event.get("cwd") or ""))
     if event.get("tool_name") in FILE_TOOLS:
-        return check_file_tool(event, project_dir, protected)
+        return check_file_tool(event, scope)
     command = command_of(event)
     if not command:
         return ALLOW
-    scope = Scope(project_dir, protected, str(event.get("cwd") or ""))
+    # Codex runs `apply_patch` from the shell as a Bash command whose text holds the patch.
+    for path in patch_paths(command):
+        if scope.protects(path):
+            return block(
+                GUARD,
+                f"{path!r} is live application data. Change it through the application, "
+                "never by editing the file.",
+            )
     asks: list[str] = []
     for found in iter_commands(command, windows=True):
         code = check_command(found, scope, asks)

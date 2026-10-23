@@ -130,6 +130,22 @@ The guard hooks work in both. Codex sends the same JSON on stdin and blocks on e
 | "Ask the user" | `permissionDecision: "ask"` | not supported: `data_guard.py` blocks instead and tells the agent to ask the user to run the command |
 | Permission tiers, agents, commands, skills | `.claude/` | Claude only; Codex has its own approval policy, sandbox and `AGENTS.md` |
 
+To use the optional `data_guard.py` under Codex, add it for `Bash` and for `apply_patch` (Codex also runs `apply_patch` from the shell as a `Bash` command, and the guard reads the patch in the command text), and pass its variables as a prefix of the command:
+
+```json
+{
+  "matcher": "^apply_patch$",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "HARNESS_DATA_PATHS=data/app.db,data/uploads python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/data_guard.py\""
+    }
+  ]
+}
+```
+
+Patch paths are resolved from the session's directory. Under Codex a leaked `CLAUDE_PROJECT_DIR` is ignored; set `HARNESS_PROJECT_DIR` to override the git root.
+
 Verified with Codex CLI 0.163: a session with `.codex/hooks.json` had a commit with a bad message, a commit on `main` and an `apply_patch` on a protected data file all blocked before they ran. Not verified: Windows under Codex (the hook command uses `python3` and `$(git rev-parse --show-toplevel)`; Codex offers a `commandWindows` override if that does not fit).
 
 Remember `< /dev/null` when scripting `codex exec`, or it waits for stdin.

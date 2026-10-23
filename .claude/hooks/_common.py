@@ -49,24 +49,40 @@ def is_codex(event: dict[str, Any]) -> bool:
 
 
 def project_dir(event: dict[str, Any]) -> str:
-    """The project root: CLAUDE_PROJECT_DIR, HARNESS_PROJECT_DIR, the git root of cwd, or cwd."""
-    for name in ("CLAUDE_PROJECT_DIR", "HARNESS_PROJECT_DIR"):
+    """The project root.
+
+    Claude Code: CLAUDE_PROJECT_DIR. Codex sets none, and a CLAUDE_PROJECT_DIR leaked from a
+    Claude session that launched it would point at the wrong project, so it is ignored there.
+    Then HARNESS_PROJECT_DIR, the git root of the event's cwd, and cwd itself.
+    """
+    names = (
+        ("HARNESS_PROJECT_DIR",)
+        if is_codex(event)
+        else ("CLAUDE_PROJECT_DIR", "HARNESS_PROJECT_DIR")
+    )
+    for name in names:
         if os.environ.get(name):
             return os.environ[name]
     cwd = str(event.get("cwd") or "")
     if cwd:
-        result = subprocess.run(
-            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:  # git is not installed
+            return cwd
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
     return cwd
 
 
-PATCH_FILE = re.compile(r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$", re.M)
+# Header lines of an apply_patch body, also when a shell command spells the newlines as `\n`.
+PATCH_FILE = re.compile(
+    r"(?:^|\\n)\s*\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*(?=\\n|$)", re.M
+)
 
 
 def patch_paths(text: str) -> list[str]:

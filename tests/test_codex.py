@@ -134,3 +134,59 @@ def test_codex_hooks_json_wires_the_same_bash_guards_as_claude_settings():
     assert commands_by_matcher(codex)["Bash"] == commands_by_matcher(claude)["Bash"]
     for scripts in commands_by_matcher(codex).values():
         assert all((HOOKS / name).is_file() for name in scripts)
+
+
+def test_patch_paths_are_relative_to_the_session_directory(repo):
+    add = "*** Begin Patch\n*** Add File: {}\n+x\n*** End Patch"
+    inside_data = codex_event("apply_patch", {"command": add.format("app.db")}, repo / "data")
+    assert run("data_guard.py", inside_data, CONFIG).returncode == 2
+    (repo / "data" / "uploads").mkdir()
+    inside_uploads = codex_event(
+        "apply_patch", {"command": add.format("a.txt")}, repo / "data/uploads"
+    )
+    assert run("data_guard.py", inside_uploads, CONFIG).returncode == 2
+    # Relative paths match by suffix, so sub/data/app.db counts as protected too (on purpose).
+    nested = codex_event("apply_patch", {"command": add.format("data/app.db")}, repo / "sub")
+    assert run("data_guard.py", nested, CONFIG).returncode == 2
+    unrelated = codex_event("apply_patch", {"command": add.format("other.db")}, repo / "sub")
+    assert run("data_guard.py", unrelated, CONFIG).returncode == 0
+
+
+@pytest.mark.parametrize("indent", ["  ", "\t", "    "])
+def test_indented_patch_headers_are_read(repo, indent):
+    patch = f"*** Begin Patch\n{indent}*** Add File: data/app.db\n+x\n*** End Patch"
+    event = codex_event("apply_patch", {"command": patch}, repo)
+    assert run("data_guard.py", event, CONFIG).returncode == 2
+
+
+def test_a_patch_applied_from_the_shell_is_found(repo):
+    patch = "*** Begin Patch\\n*** Add File: data/app.db\\n+hi\\n*** End Patch\\n"
+    command = f"printf '{patch}' | apply_patch"
+    result = run("data_guard.py", codex_event("Bash", {"command": command}, repo), CONFIG)
+    assert result.returncode == 2
+    heredoc = (
+        "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: data/app.db\n*** End Patch\nEOF"
+    )
+    assert (
+        run("data_guard.py", codex_event("Bash", {"command": heredoc}, repo), CONFIG).returncode
+        == 2
+    )
+    other = "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: src/x.py\n+x\n*** End Patch\nEOF"
+    assert (
+        run("data_guard.py", codex_event("Bash", {"command": other}, repo), CONFIG).returncode == 0
+    )
+
+
+def test_a_claude_project_dir_leaked_into_codex_is_ignored(repo, tmp_path_factory):
+    other = tmp_path_factory.mktemp("other")
+    event = codex_event("Bash", {"command": f'rm -rf "{repo}"'}, repo)
+    assert run("rm_guard.py", event, {"CLAUDE_PROJECT_DIR": str(other)}).returncode == 2
+    # Claude Code still trusts its own variable.
+    del event["turn_id"]
+    assert run("rm_guard.py", event, {"CLAUDE_PROJECT_DIR": str(other)}).returncode == 0
+
+
+def test_a_missing_git_does_not_break_the_guards(repo):
+    event = codex_event("Bash", {"command": "ls"}, repo)
+    for guard in ("rm_guard.py", "data_guard.py"):
+        assert run(guard, event, {**CONFIG, "PATH": "/nonexistent"}).returncode == 0
