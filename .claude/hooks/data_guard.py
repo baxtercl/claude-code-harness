@@ -54,7 +54,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from _common import ALLOW, block, command_of, env_list, run_guard
+from _common import (
+    ALLOW,
+    block,
+    command_of,
+    env_list,
+    is_codex,
+    patch_paths,
+    project_dir as find_project_dir,
+    run_guard,
+)
 from _shell import Command, expand_braces, iter_commands, program_name
 
 GUARD = "data-guard"
@@ -75,7 +84,7 @@ DOT_WRITE = re.compile(r"(^|\s)\.(restore|import|read|load|shell|system|output|o
 # Programs whose arguments are text, not commands to run.
 TEXT_PROGRAMS = {"echo", "printf", "cat", "grep", "rg", "less", "head", "tail", "man", "which"}
 GLOB = re.compile(r"[*?\[]")
-FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"}
 
 
 def normalize(path: str) -> str:
@@ -216,20 +225,26 @@ def backup_hint() -> str:
     return f"Run '{command}' first" if command else "Take a backup first"
 
 
-def check_file_tool(event: dict[str, Any], project_dir: str, protected: list[str]) -> int:
-    tool_input = event.get("tool_input") or {}
-    path = str(
-        tool_input.get("file_path")
-        or tool_input.get("notebook_path")
-        or tool_input.get("path")
-        or ""
+def edited_paths(tool_input: dict[str, Any]) -> list[str]:
+    """The files a Write/Edit/NotebookEdit call or a Codex apply_patch call changes."""
+    direct = (
+        tool_input.get("file_path") or tool_input.get("notebook_path") or tool_input.get("path")
     )
-    if is_protected(path, project_dir, protected):
-        return block(
-            GUARD,
-            f"{path!r} is live application data. Change it through the application, "
-            "never by editing the file.",
-        )
+    paths = [str(direct)] if direct else []
+    patch = tool_input.get("command")
+    if isinstance(patch, str):
+        paths += patch_paths(patch)
+    return paths
+
+
+def check_file_tool(event: dict[str, Any], root: str, protected: list[str]) -> int:
+    for path in edited_paths(event.get("tool_input") or {}):
+        if is_protected(path, root, protected):
+            return block(
+                GUARD,
+                f"{path!r} is live application data. Change it through the application, "
+                "never by editing the file.",
+            )
     return ALLOW
 
 
@@ -400,7 +415,7 @@ def check(event: dict[str, Any]) -> int:
     protected = env_list("HARNESS_DATA_PATHS", "")
     if not protected:
         return ALLOW
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or str(event.get("cwd") or "")
+    project_dir = find_project_dir(event)
     if event.get("tool_name") in FILE_TOOLS:
         return check_file_tool(event, project_dir, protected)
     command = command_of(event)
@@ -412,6 +427,9 @@ def check(event: dict[str, Any]) -> int:
         code = check_command(found, scope, asks)
         if code != ALLOW:
             return code
+    if asks and is_codex(event):
+        # Codex has no "ask" decision: stop, and let the user run the command themselves.
+        return block(GUARD, " ".join(asks) + " Ask the user to run it themselves.")
     if asks:
         ask(asks)
     return ALLOW
