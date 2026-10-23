@@ -30,6 +30,12 @@ All notable changes to this project are documented here. The format follows
 - With `HARNESS_BLOCK_AI_TRAILERS=1`, `commit_guard.py` blocked any mention of an assistant's
   product name in the command. It now checks only trailer and footer lines of the message, so
   human co-authors and messages that merely mention an assistant are allowed.
+- The repository of a commit follows `cd`, `pushd`, `-C`, `GIT_DIR` and `--git-dir`; a directory
+  that does not exist yet falls back to the working directory. Line continuations, `$'...'`,
+  unquoted heredoc bodies with `$(...)`, `bash -c -l`, `fish -c`, `su -c`, `cmd /c`,
+  `powershell -Command`, more wrappers and abbreviated long options are handled, and a
+  commit message given as a heredoc with parentheses, git's own `Merge ...` subjects and
+  messages held in a variable are no longer rejected.
 - `rm_guard.py` now uses the same analyser, so `rm` is found inside `bash -c`, subshells,
   backticks, `sudo`/`env`/`xargs` and behind `&`; it also blocks `rm -rf //`, `/*`, quote
   concatenation such as `s"r"c`, `C:\Windows` and `C:\Program Files`, and compares protected

@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Any
 
 from _common import ALLOW, block, command_of, env_list, run_guard
-from _shell import Command, iter_commands, program_name
+from _shell import Command, expand_braces, iter_commands, program_name
 
 GUARD = "data-guard"
 
@@ -67,11 +67,13 @@ REDIRECT_TOKEN = re.compile(r"^\d?(?:>>?\|?|&>>?)(.*)$")
 INPUT_REDIRECT = re.compile(r"^\d?<(?!<)(.*)$")
 SQLITE_VALUE_OPTIONS = {"-init", "-separator", "-newline", "-nullvalue", "-vfs", "-mmap", "-key"}
 SQL_WRITE = re.compile(
-    r"\b(insert|update|delete|drop|alter|create|replace|vacuum|reindex|attach|writefile)\b"
-    r"|\bpragma\s+\w+\s*=",
+    r"\b(insert|update|delete|drop|alter|create|replace|vacuum|reindex|attach|analyze|begin"
+    r"|writefile|load_extension)\b|\bpragma\s+\w+\s*[=(]",
     re.IGNORECASE,
 )
-DOT_WRITE = re.compile(r"(^|\s)\.(restore|import|read|load|shell|system|output|once)\b", re.I)
+DOT_WRITE = re.compile(r"(^|\s)\.(restore|import|read|load|shell|system|output|once|open)\b", re.I)
+# Programs whose arguments are text, not commands to run.
+TEXT_PROGRAMS = {"echo", "printf", "cat", "grep", "rg", "less", "head", "tail", "man", "which"}
 GLOB = re.compile(r"[*?\[]")
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
@@ -216,7 +218,12 @@ def backup_hint() -> str:
 
 def check_file_tool(event: dict[str, Any], project_dir: str, protected: list[str]) -> int:
     tool_input = event.get("tool_input") or {}
-    path = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+    path = str(
+        tool_input.get("file_path")
+        or tool_input.get("notebook_path")
+        or tool_input.get("path")
+        or ""
+    )
     if is_protected(path, project_dir, protected):
         return block(
             GUARD,
@@ -242,8 +249,12 @@ class Scope:
         return is_protected(path, self.project_dir, self.protected, parents, self.base)
 
     def follow_cd(self, args: list[str]) -> None:
-        target = normalize(args[0]) if args else ""
-        if target and not is_absolute(target) and not target.startswith("~"):
+        moved = [arg for arg in args if arg != "--" and not arg.startswith("-")]
+        target = normalize(moved[0]) if moved else ""
+        if target and is_absolute(target):
+            relative = relative_to_project(target, self.project_dir)
+            self.base = "" if relative in {None, "."} else relative
+        elif target and not target.startswith("~"):
             self.base = normalize(f"{self.base}/{target}") if self.base else target
         else:
             self.base = ""
@@ -256,6 +267,16 @@ def path_arguments(program: str, tokens: list[str]) -> tuple[list[str], bool]:
         return args, True
     if program == "dd":
         return [a.removeprefix("of=") for a in tokens[1:] if a.startswith("of=")], False
+    if program == "find" and ("-delete" in tokens or "-exec" in tokens):
+        roots = []
+        for token in tokens[1:]:
+            if token.startswith(("-", "(", "!")):
+                break
+            roots.append(token)
+        return roots or ["."], True
+    if program == "rsync":
+        destination = args[-1:]
+        return destination, "--delete" in tokens or any(t.startswith("--delete-") for t in tokens)
     if program in COPIERS:
         for index, token in enumerate(tokens[1:-1], start=1):
             if token in {"-t", "--target-directory"}:
@@ -292,9 +313,10 @@ def check_sqlite(found: Command, tokens: list[str], scope: Scope) -> int:
         return ALLOW
     sql = " ".join(statements)
     reads_input = bool(found.stdin) or any(INPUT_REDIRECT.match(t) for t in found.raw)
-    if SQL_WRITE.search(sql) or DOT_WRITE.search(sql):
+    readonly = "-readonly" in tokens
+    if DOT_WRITE.search(sql) or (SQL_WRITE.search(sql) and not readonly):
         reason = "a write statement"
-    elif "-readonly" not in tokens and (reads_input or not sql):
+    elif not readonly and (reads_input or not sql):
         reason = "commands read from stdin or a file, or an interactive session"
     else:
         return ALLOW
@@ -305,24 +327,33 @@ def check_sqlite(found: Command, tokens: list[str], scope: Scope) -> int:
     )
 
 
+def check_redirections(found: Command, scope: Scope) -> int:
+    for target in redirect_targets(found.raw):
+        if scope.protects(target):
+            return block(GUARD, f"the redirection would overwrite live data ({target!r}).")
+    return ALLOW
+
+
 def check_command(found: Command, scope: Scope, asks: list[str]) -> int:
     tokens = normalized_tokens(found)
+    if not tokens:  # only assignments and redirections
+        return check_redirections(found, scope)
     program = program_name(tokens[0])
-    if program == "cd":
+    if program in {"cd", "pushd"}:
         scope.follow_cd(tokens[1:])
         return ALLOW
 
     paths, parents = path_arguments(program, tokens)
-    for path in paths:
+    for path in (expanded for token in paths for expanded in expand_braces(token)):
         if scope.protects(path, parents):
             return block(
                 GUARD,
                 f"{program} on {path!r} would alter live data. "
                 f"Ask the user to do it themselves, after a backup. {backup_hint()}.",
             )
-    for target in redirect_targets(found.raw):
-        if scope.protects(target):
-            return block(GUARD, f"the redirection would overwrite live data ({target!r}).")
+    code = check_redirections(found, scope)
+    if code != ALLOW:
+        return code
     if program == "sqlite3":
         code = check_sqlite(found, tokens, scope)
         if code != ALLOW:
@@ -332,7 +363,7 @@ def check_command(found: Command, scope: Scope, asks: list[str]) -> int:
 
 
 def check_live_commands(tokens: list[str], project_dir: str, live: bool, asks: list[str]) -> int:
-    if not live:
+    if not live or program_name(tokens[0]) in TEXT_PROGRAMS:
         return ALLOW
     # Quoted arguments (with spaces) are text, not command words.
     words = " ".join(token for token in tokens if not re.search(r"\s", token))

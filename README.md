@@ -58,7 +58,9 @@ tests/                       pytest suite for every guard
 
 With `HARNESS_BLOCK_AI_TRAILERS=1`, `commit_guard.py` rejects only attribution lines in the message (a `Co-Authored-By` naming an assistant, a `Generated with` footer), whether the message comes from `-m`, `-F -`, `-F <file>` or `--trailer`, and not every mention of an assistant.
 
-Known limitations, stated on purpose: guards read the literal command. `rm -rf $DIR`, where `$DIR` expands to a protected path, is not caught, and neither is a git alias such as `git ci` or a commit run on another machine (`ssh host 'git commit'`). Version control is the safety net there.
+The repository a commit goes to is the one the command works in: the event's directory moved by `cd`/`pushd`, `-C`, `GIT_DIR` and `--git-dir`. Line continuations, `$'...'` strings and brace expansion (`rm {a,b}`) are resolved before the check.
+
+Known limitations, stated on purpose. The guards stop accidents by an agent that is not trying to evade them; they are not a sandbox. They read the literal command, so `rm -rf $DIR`, where `$DIR` expands to a protected path, is not caught, and neither is a git alias such as `git ci`, a commit run on another machine (`ssh host 'git commit'`), a message held in a variable, or a script that builds its command from pieces. `data_guard.py` knows the common destructive tools (`rm`, `mv`, `cp`, `rsync`, `ln`, `tee`, `sed -i`, `find -delete`, `sqlite3`, redirections) and not every writer (`tar -x`, `unzip`, `curl -o`, `perl -pi`). Version control and backups are the safety net there.
 
 ### Optional: `data_guard.py`
 

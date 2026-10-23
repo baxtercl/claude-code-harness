@@ -18,10 +18,13 @@ on the line (see _shell.py: separators, nested shells, wrappers such as `sudo` o
 `env`, `find -exec`). The message comes from that command alone, so text that
 mentions a commit, or the `-m` of another program chained before it, is never
 mistaken for one. The message may be given with -m, with `-F -` (a heredoc), with
-`-F <file>` (read when the file exists) and with --trailer.
+`-F <file>` (read when the file exists) and with --trailer. The repository is the
+one the command works in: the event's directory, moved by any `cd`/`pushd` before it,
+by `-C`, and by `GIT_DIR`/`--git-dir`.
 
-Known limitations: git aliases (`git ci`) are not recognised, and neither are
-commits run on another machine (`ssh host 'git commit'`).
+Known limitations: git aliases (`git ci`) are not recognised, nor are commits run on
+another machine (`ssh host 'git commit'`), a message held in a variable (`-m "$MSG"`)
+is not checked, and Windows backslash paths after `-C` are not understood.
 
 Configuration (environment):
   HARNESS_PROTECTED_BRANCHES   default "main"
@@ -35,7 +38,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +52,8 @@ CONVENTIONAL = re.compile(
     r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
     r"(\([a-z0-9._/-]+\))?!?: \S"
 )
+# Messages that git itself writes.
+GENERATED = re.compile(r"^(Merge |Revert \"|fixup! |squash! |amend! )")
 # Only trailer and footer lines count: a message that says "update CLAUDE.md" or
 # "document Claude Code hooks" is not an attribution.
 AI_NAMES = r"(claude|anthropic|openai|chatgpt|gpt-?\d|codex|copilot|gemini|cursor|devin)"
@@ -70,6 +75,7 @@ GIT_OPTIONS_WITH_VALUE = {
 }
 # `-m` or `-F`, optionally clustered with value-less flags (`-am`) or glued to the value.
 SHORT_VALUE = re.compile(r"^-[aenpsvqzio]*([mF])(.*)$")
+LONG_OPTIONS = {"--message": "message", "--file": "file", "--trailer": "trailer"}
 # What `-m "$(cat <<'EOF' ... EOF)"` leaves in the argument.
 SUBSTITUTED_HEREDOC = re.compile(
     r"^\$\(\s*cat\s+<<-?\s*(['\"]?)(\w+)\1\n(.*)\n\s*\2\s*\)$", re.DOTALL
@@ -79,31 +85,55 @@ SUBSTITUTED_HEREDOC = re.compile(
 @dataclass
 class Commit:
     args: list[str]
-    git_dirs: list[str]
     stdin: str
+    dirs: list[str] = field(default_factory=list)  # cd, pushd and -C, in order
+    git_dir: str = ""
 
 
-def git_commit(args: list[str], stdin: str) -> Commit | None:
+def long_option(arg: str) -> tuple[str, str] | None:
+    """(kind, inline value) for --message, --file, --trailer; git accepts unique prefixes."""
+    name, _, inline = arg.partition("=")
+    if len(name) >= 5:
+        for full, kind in LONG_OPTIONS.items():
+            if full.startswith(name):
+                return kind, inline
+    return None
+
+
+def git_commit(args: list[str], stdin: str, raw: list[str], dirs: list[str]) -> Commit | None:
     """The commit invocation behind `git <global options> commit <args>`, if it is one."""
-    git_dirs: list[str] = []
+    git_dir = next((t.split("=", 1)[1] for t in raw if t.startswith("GIT_DIR=")), "")
+    own_dirs = list(dirs)
     index = 0
     while index < len(args) and args[index].startswith("-"):
         option = args[index]
+        value = args[index + 1] if index + 1 < len(args) else ""
+        if option == "-C":
+            own_dirs.append(value)
+        elif option == "--git-dir":
+            git_dir = value
+        elif option.startswith("--git-dir="):
+            git_dir = option.split("=", 1)[1]
         if option in GIT_OPTIONS_WITH_VALUE:
-            if option == "-C" and index + 1 < len(args):
-                git_dirs.append(args[index + 1])
             index += 1
         index += 1
     if index < len(args) and args[index] == "commit":
-        return Commit(args[index + 1 :], git_dirs, stdin)
+        return Commit(args[index + 1 :], stdin, own_dirs, git_dir)
     return None
 
 
 def commits_in(command: str) -> list[Commit]:
     commits = []
+    dirs: list[str] = []
     for found in iter_commands(command):
-        if program_name(found.tokens[0]) == "git":
-            commit = git_commit(found.tokens[1:], found.stdin)
+        if not found.tokens:
+            continue
+        program = program_name(found.tokens[0])
+        if program in {"cd", "pushd"}:
+            targets = [t for t in found.tokens[1:] if t != "--" and not t.startswith("-")]
+            dirs += targets[:1]
+        elif program == "git":
+            commit = git_commit(found.tokens[1:], found.stdin, found.raw, dirs)
             if commit:
                 commits.append(commit)
     return commits
@@ -129,24 +159,23 @@ def commit_message(commit: Commit, repo_dir: str) -> str | None:
         arg = args[index]
         if arg == "--":
             break
-        flag, value = "", ""
-        if arg in {"--message", "--file", "--trailer"} and index + 1 < len(args):
-            flag, value = arg, args[index + 1]
-            index += 1
-        elif arg.startswith(("--message=", "--file=", "--trailer=")):
-            flag, value = arg.split("=", 1)
-        elif not arg.startswith("--") and (short := SHORT_VALUE.match(arg)):
-            letter, glued = short.groups()
-            flag = "--message" if letter == "m" else "--file"
-            value = glued
-            if not glued and index + 1 < len(args):
+        kind, value = "", ""
+        if arg.startswith("--") and (option := long_option(arg)):
+            kind, value = option
+            if "=" not in arg and index + 1 < len(args):
                 value = args[index + 1]
                 index += 1
-        if flag == "--message":
+        elif not arg.startswith("--") and (short := SHORT_VALUE.match(arg)):
+            letter, value = short.groups()
+            kind = "message" if letter == "m" else "file"
+            if not value and index + 1 < len(args):
+                value = args[index + 1]
+                index += 1
+        if kind == "message":
             messages.append(value)
-        elif flag == "--trailer":
+        elif kind == "trailer":
             trailers.append(value)
-        elif flag == "--file":
+        elif kind == "file":
             text = commit.stdin if value == "-" else read_message_file(value, repo_dir)
             if text:
                 messages.append(text)
@@ -160,20 +189,17 @@ def commit_message(commit: Commit, repo_dir: str) -> str | None:
     return "\n\n".join([*messages, *trailers])
 
 
-def repo_dir_for(command: str, cwd: str, git_dirs: list[str]) -> str:
+def repo_dir_for(cwd: str, dirs: list[str]) -> str:
     repo_dir = cwd or os.getcwd()
-    cd_match = re.match(r"^\s*cd\s+([^\s;&|]+)", command)
-    if cd_match:
-        repo_dir = os.path.join(repo_dir, os.path.expanduser(cd_match.group(1)))
-    for git_dir in git_dirs:
-        repo_dir = os.path.join(repo_dir, os.path.expanduser(git_dir))
-    return repo_dir
+    for directory in dirs:
+        repo_dir = os.path.join(repo_dir, os.path.expanduser(directory))
+    # A directory that does not exist (yet) cannot be inspected: fall back to where we are.
+    return repo_dir if os.path.isdir(repo_dir) else (cwd or os.getcwd())
 
 
-def git(repo_dir: str, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", repo_dir, *args], capture_output=True, text=True, check=False
-    )
+def git(repo_dir: str, git_dir: str, *args: str) -> str:
+    base = ["git", "--git-dir", git_dir] if git_dir else ["git", "-C", repo_dir]
+    result = subprocess.run([*base, *args], capture_output=True, text=True, check=False)
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
@@ -188,7 +214,13 @@ def check_message(message: str) -> int:
                     "human-only authorship lines. Rewrite the message without it.",
                 )
     subject = next((line for line in lines if line), "")
-    if env_flag("HARNESS_CONVENTIONAL_COMMITS", True) and not CONVENTIONAL.match(subject):
+    if subject.startswith("$"):  # held in a variable or a substitution: cannot be judged
+        return ALLOW
+    if (
+        env_flag("HARNESS_CONVENTIONAL_COMMITS", True)
+        and not CONVENTIONAL.match(subject)
+        and not GENERATED.match(subject)
+    ):
         return block(
             GUARD,
             f"{subject!r} is not a Conventional Commit. "
@@ -197,8 +229,8 @@ def check_message(message: str) -> int:
     return ALLOW
 
 
-def check_branch(repo_dir: str) -> int:
-    branch = git(repo_dir, "branch", "--show-current")
+def check_branch(repo_dir: str, git_dir: str) -> int:
+    branch = git(repo_dir, git_dir, "branch", "--show-current")
     if not branch:
         return ALLOW
 
@@ -209,8 +241,8 @@ def check_branch(repo_dir: str) -> int:
         )
 
     if branch in env_list("HARNESS_MERGE_ONLY_BRANCHES", "develop"):
-        git_dir = git(repo_dir, "rev-parse", "--absolute-git-dir")
-        if not git_dir or not os.path.exists(os.path.join(git_dir, "MERGE_HEAD")):
+        absolute = git(repo_dir, git_dir, "rev-parse", "--absolute-git-dir")
+        if not absolute or not os.path.exists(os.path.join(absolute, "MERGE_HEAD")):
             return block(
                 GUARD,
                 f"'{branch}' only receives merges. Work on a feature/* or bugfix/* branch. "
@@ -222,13 +254,13 @@ def check_branch(repo_dir: str) -> int:
 def check(event: dict[str, Any]) -> int:
     command = command_of(event)
     for commit in commits_in(command):
-        repo_dir = repo_dir_for(command, str(event.get("cwd") or ""), commit.git_dirs)
+        repo_dir = repo_dir_for(str(event.get("cwd") or ""), commit.dirs)
         message = commit_message(commit, repo_dir)
         if message is not None:
             code = check_message(message)
             if code != ALLOW:
                 return code
-        code = check_branch(repo_dir)
+        code = check_branch(repo_dir, commit.git_dir)
         if code != ALLOW:
             return code
     return ALLOW
