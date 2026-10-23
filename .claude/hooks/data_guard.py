@@ -424,13 +424,15 @@ def check(event: dict[str, Any]) -> int:
     if not command:
         return ALLOW
     # Codex runs `apply_patch` from the shell as a Bash command whose text holds the patch.
-    for path in patch_paths(command):
-        if scope.protects(path):
-            return block(
-                GUARD,
-                f"{path!r} is live application data. Change it through the application, "
-                "never by editing the file.",
-            )
+    # Claude Code has no apply_patch: a header line in its command is just quoted text.
+    if is_codex(event):
+        for path in patch_paths(command):
+            if scope.protects(path):
+                return block(
+                    GUARD,
+                    f"{path!r} is live application data. Change it through the application, "
+                    "never by editing the file.",
+                )
     asks: list[str] = []
     for found in iter_commands(command, windows=True):
         code = check_command(found, scope, asks)
