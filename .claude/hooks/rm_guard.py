@@ -22,12 +22,11 @@ Configuration (environment):
 
 from __future__ import annotations
 
-import os
 import posixpath
 import re
 from typing import Any
 
-from _common import ALLOW, block, command_of, env_list, run_guard
+from _common import ALLOW, block, command_of, env_list, project_dir, run_guard
 from _shell import expand_braces, iter_commands, program_name
 
 GUARD = "rm-guard"
@@ -155,7 +154,7 @@ def resolve(target: str, cwd: str) -> str:
 def check(event: dict[str, Any]) -> int:
     command = command_of(event)
     protected = set(env_list("HARNESS_RM_PROTECTED", "src,.git,.claude,docs,migrations"))
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    root = project_dir(event)
     cwd = ""
     for found in iter_commands(command, windows=True):
         if found.tokens and program_name(normalize(found.tokens[0])) in {"cd", "pushd"}:
@@ -163,7 +162,7 @@ def check(event: dict[str, Any]) -> int:
             cwd = normalize(resolve(moved[0], cwd)) if moved else ""
         for token in rm_targets(found.tokens):
             for target in expand_braces(token):
-                reason = danger_reason(resolve(target, cwd), protected, project_dir)
+                reason = danger_reason(resolve(target, cwd), protected, root)
                 if reason:
                     return block(
                         GUARD,

@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/commit_guard.py\"",
+            "statusMessage": "Checking commit hygiene..."
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/rm_guard.py\"",
+            "statusMessage": "Checking delete targets..."
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/secret_file_guard.py\"",
+            "statusMessage": "Checking access to secret files..."
+          }
+        ]
+      }
+    ]
+  }
+}

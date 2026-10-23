@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-23
+
+### Added
+
+- Codex support. The guard hooks run unchanged under Codex: `.codex/hooks.json` wires the Bash
+  guards, `install.sh` copies it, and a test keeps it in step with `.claude/settings.json`.
+  Verified against Codex CLI 0.163. See "Claude Code and Codex" in the README.
+
+### Changed
+
+- The project root comes from `CLAUDE_PROJECT_DIR`, then `HARNESS_PROJECT_DIR`, then the git root
+  of the event's `cwd`, so the guards no longer depend on a Claude Code variable.
+- `data_guard.py` reads the files named in a Codex `apply_patch`, and where Claude Code would ask
+  it blocks under Codex, which has no "ask" decision.
+- A command given as an argv array is joined before it is inspected.
+
 ## [0.2.1] - 2026-10-23
 
 ### Fixed

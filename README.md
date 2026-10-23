@@ -116,6 +116,40 @@ The installer never overwrites an existing `settings.json`; it writes `settings.
 
 Requires Python 3.10+ (standard library only) and git.
 
+## Claude Code and Codex
+
+The guard hooks work in both. Codex sends the same JSON on stdin and blocks on exit code 2, so one copy of `.claude/hooks/` serves both agents; `.codex/hooks.json` wires it for Codex, with the same Bash guards as `.claude/settings.json` (a test keeps them in step). The installer copies it.
+
+| | Claude Code | Codex |
+|---|---|---|
+| Hook wiring | `.claude/settings.json` | `.codex/hooks.json` (or `[hooks]` in `.codex/config.toml`) |
+| Trust | none | review the hooks once with `/hooks`; a changed hook must be trusted again |
+| Environment | the `env` block of `settings.json` | the process environment, or a prefix in the hook command (`HARNESS_BLOCK_AI_TRAILERS=1 python3 ...`) |
+| Project root | `CLAUDE_PROJECT_DIR` | the git root of `cwd` (or `HARNESS_PROJECT_DIR`) |
+| File edits | `Write`, `Edit`, `MultiEdit`, `NotebookEdit` | `apply_patch` (`data_guard.py` reads the files named in the patch) |
+| "Ask the user" | `permissionDecision: "ask"` | not supported: `data_guard.py` blocks instead and tells the agent to ask the user to run the command |
+| Permission tiers, agents, commands, skills | `.claude/` | Claude only; Codex has its own approval policy, sandbox and `AGENTS.md` |
+
+To use the optional `data_guard.py` under Codex, add it for `Bash` and for `apply_patch` (Codex also runs `apply_patch` from the shell as a `Bash` command, and the guard reads the patch in the command text), and pass its variables as a prefix of the command:
+
+```json
+{
+  "matcher": "^apply_patch$",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "HARNESS_DATA_PATHS=data/app.db,data/uploads python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/data_guard.py\""
+    }
+  ]
+}
+```
+
+Patch paths are resolved from the session's directory. Under Codex a leaked `CLAUDE_PROJECT_DIR` is ignored; set `HARNESS_PROJECT_DIR` to override the git root.
+
+Verified with Codex CLI 0.163: a session with `.codex/hooks.json` had a commit with a bad message, a commit on `main` and an `apply_patch` on a protected data file all blocked before they ran. Not verified: Windows under Codex (the hook command uses `python3` and `$(git rev-parse --show-toplevel)`; Codex offers a `commandWindows` override if that does not fit).
+
+Remember `< /dev/null` when scripting `codex exec`, or it waits for stdin.
+
 ## Configure
 
 All guard behavior is set through the `env` block in `.claude/settings.json`:
