@@ -3,7 +3,7 @@
 #
 # Usage: ./install.sh <target-project-dir> [--force]
 #
-# Copies hooks, agents, commands, skills, rules and tools/env_inspect.py.
+# Copies hooks, agents, commands, skills, rules, tools/env_inspect.py and .codex/hooks.json.
 # Existing files are kept unless --force is given. An existing settings.json is
 # never overwritten: the harness version is written next to it as
 # settings.harness.json so the permissions and hooks can be merged by hand.
@@ -56,6 +56,9 @@ elif [ -e "$target/.claude/settings.json" ]; then
 else
   copy "$src/.claude/settings.json" "$target/.claude/settings.json"
 fi
+
+# Codex reads the same guards through .codex/hooks.json (it must be trusted with /hooks).
+copy "$src/.codex/hooks.json" "$target/.codex/hooks.json"
 
 [ -e "$target/CLAUDE.md" ] || copy "$src/templates/CLAUDE.md" "$target/CLAUDE.md"
 copy "$src/templates/prd-template.md" "$target/templates/prd-template.md"
