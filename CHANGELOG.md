@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-10-23
+
+### Fixed
+
+- `data_guard.py` looked for `apply_patch` headers in every Bash command, so under Claude Code a
+  commit message that quoted one was blocked. That scan now only runs for Codex events.
+
 ## [0.3.0] - 2026-10-23
 
 ### Added

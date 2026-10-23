@@ -190,3 +190,9 @@ def test_a_missing_git_does_not_break_the_guards(repo):
     event = codex_event("Bash", {"command": "ls"}, repo)
     for guard in ("rm_guard.py", "data_guard.py"):
         assert run(guard, event, {**CONFIG, "PATH": "/nonexistent"}).returncode == 0
+
+
+def test_a_commit_message_that_quotes_a_patch_header_is_not_blocked_for_claude(repo):
+    command = "git commit -m 'docs: x\\n\\n*** Add File: data/app.db'"
+    event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(repo)}
+    assert run("data_guard.py", event, CONFIG).returncode == 0
